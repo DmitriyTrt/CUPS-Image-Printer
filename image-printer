@@ -1,0 +1,190 @@
+#!/bin/sh
+#################################################################################
+#
+# File:           image-printer
+#
+# Description:    A simple image Writer for CUPS
+#
+# Copyright:      (c) 2011  Dmitriy Trt, http://dmitriy.trt.su
+#                 (c) 2006  Axel Schmidt,  SUSE LINUX GmbH, Nuernberg, Germany
+#                 (c) 2001  Michael Goffioul (kdeprint <at> swing <dot> be)
+#
+# License:        GPL
+#
+#################################################################################
+
+# TODO move all basic options to settings file in /etc/
+# TODO allow changing some options on-the-fly with GTK zenity tool
+
+# ============ Options ============ #
+
+# Base spool directory for printing results.
+IMP_SPOOL="/var/spool/image-printer"
+
+# Output file format. Can be auto, png, jpg or pdf. 
+# Auto will try to determine format based on filename: png-printer, jpg-printer or pdf-printer.
+IMP_FORMAT="auto"
+
+# Filename prefix.
+IMP_FILE=`date +%Y-%m-%d-%H:%M.%S.%N`
+
+# User folder permission.
+IMP_PATH_CHMOD="0770"
+
+# Created files permission.
+IMP_FILE_CHMOD="0660"
+
+# GhostScript and ps2pdf executables and arguments.
+GS="/usr/bin/gs"
+GS_ARGS="-dSAFER -dNOPAUSE -dBATCH"
+GS_ARGS_JPG="-r150 -dJPEGQ=50 -sDEVICE=jpeg" # TODO fix ugly quality for JPEG
+GS_ARGS_PNG="-r150 -sDEVICE=png16m"
+PS2PDF="/usr/bin/ps2pdf"
+PS2PDF_ARGS=""
+
+# Backend filename.
+IMP_BACKEND=`basename $0`
+
+# Job.
+IMP_JOB=$1
+
+# User started printing job.
+IMP_USER=$2
+
+# ======= Options processing ======= #
+
+# Path to store files, constructed from path and username.
+# TODO protect from ../ in username
+IMP_PATH="$IMP_SPOOL/$IMP_USER"
+
+# Process auto-format: get file format from backend filename.
+if [ "$IMP_FORMAT" = "auto" ]; then
+  case "$IMP_BACKEND" in
+    pdf-printer)
+      IMP_FORMAT="pdf"
+    ;;
+    
+    jpg-printer | jpeg-printer)
+      IMP_FORMAT="jpg"
+    ;;
+    
+    *)
+      IMP_FORMAT="png"
+    ;;
+  esac
+  logger "$IMP_BACKEND: auto format $IMP_FORMAT"
+fi
+
+# Process selected format: get executable, arguments and human-readable
+# backend name.
+case "$IMP_FORMAT" in
+  pdf)
+    IMP_TITLE="PDF Printer"
+    IMP_EXEC="$PS2PDF"
+    IMP_ARGS="$PS2PDF_ARGS"
+  ;;
+  
+  jpg | jpeg)
+    IMP_TITLE="JPEG Printer"
+    IMP_EXEC="$GS"
+    IMP_ARGS="$GS_ARGS $GS_ARGS_JPG"
+	;;
+  
+  png)
+    IMP_TITLE="PNG Printer"
+    IMP_EXEC="$GS"
+    IMP_ARGS="$GS_ARGS $GS_ARGS_PNG"
+  ;;
+  
+  *)
+    # TODO error
+    logger "Wrong format"
+    exit 1
+  ;;
+esac
+
+# Respond to DEVICE DISCOVERY (call without arguments means discovery).
+if [ $# -eq 0 ]; then
+  if [ -x "$IMP_EXEC" ]; then
+    if [ -d "$IMP_SPOOL" ]; then
+      if [ -w "$IMP_SPOOL" ]; then
+        echo "network $IMP_BACKEND:$IMP_SPOOL \"Unknown\" \"$IMP_TITLE\""
+        exit 0
+      else
+        # TODO error to sheduler
+        logger "$IMP_BACKEND: ERROR: $IMP_SPOOL is not writable!" # TODO
+        exit 1
+      fi
+    else
+      # TODO error to sheduler
+      logger "$IMP_BACKEND: ERROR: $IMP_SPOOL is not directory!" # TODO
+      exit 1
+    fi
+  else
+    # TODO echo "ERROR: $ - ps2pdf is not available!"      
+    logger "$IMP_BACKEND: ERROR: $IMP_EXEC is not available!" # TODO
+    exit 1
+  fi 
+fi
+
+# Get input source: 6 arguments means last is filename, 5 - read from sdtin.
+if [ $# -eq 6 ]; then
+  # TODO properly escape filename
+  IMP_INPUT="$6"
+else
+  IMP_INPUT="-"
+fi
+
+# ==== Ensure user folder exists and writable ==== #
+if [ ! -d "$IMP_PATH" ]; then
+  mkdir -p -m $IMP_PATH_CHMOD "$IMP_PATH" > /dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    # TODO error to sheduler
+    logger "$IMP_BACKEND: ERROR: Can't create $IMP_PATH directory!" # TODO
+    exit 1
+  fi
+else
+  if [ ! -w "$IMP_PATH" ]; then
+    # TODO error to sheduler
+    logger "$IMP_BACKEND: ERROR: $IMP_PATH directory is not writable!" # TODO
+    exit 1
+  fi
+fi
+
+# ==== Construct filename and final command ==== #
+# TODO ensure filename is unique
+
+IMP_COMMAND="$IMP_EXEC $IMP_ARGS"
+case "$IMP_FORMAT" in
+  pdf)
+    # TODO properly escape filename
+    IMP_OUTPUT="$IMP_PATH/$IMP_FILE.$IMP_FORMAT"
+    IMP_COMMAND="$IMP_COMMAND $IMP_INPUT $IMP_OUTPUT"
+  ;;
+  
+  jpg | jpeg | png)
+    # We add %d here to print each page of documents into separate image
+    # TODO properly escape filename
+    IMP_OUTPUT="$IMP_PATH/$IMP_FILE-%d.$IMP_FORMAT"
+    IMP_COMMAND="$IMP_COMMAND -sOutputFile=$IMP_OUTPUT $IMP_INPUT"
+  ;;
+  
+  *)
+    exit 1
+  ;;
+esac
+
+# ==== Finally print it ==== #
+$IMP_COMMAND
+IMP_RESULT=$?
+
+if [ $IMP_RESULT -ne 0 ]; then
+  # TODO error to sheduler
+  logger "$IMP_BACKEND: ERROR: Command $IMP_COMMAND failed! Error code: $IMP_RESULT" # TODO
+  exit 1
+else
+  # TODO fix chmod for images (%d expands into numbers and we run chmod on wrong file)
+  chmod $IMP_FILE_CHMOD $IMP_OUTPUT
+  # TODO check status of chmod
+  exit 0
+fi
